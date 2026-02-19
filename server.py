@@ -45,6 +45,7 @@ session_data = {
     'stop_event': Event(),
     'engine_thread': None,
     'absen_done_today': set(),
+    'absen_delay': 1,  # minutes before class ends
 }
 
 
@@ -334,6 +335,26 @@ def check_and_absen(s):
             course_name = course_match.group(1).strip() if course_match else kd_mt_kul8
 
             add_log(f'Kelas aktif ditemukan: {course_name} (Pertemuan {pertemuan_val})', 'info')
+            add_log(f'Jadwal: {jadwal_mulai} - {jadwal_berakhir}', 'info')
+
+            # ===== DELAY CHECK: wait until X minutes before class ends =====
+            absen_delay = session_data.get('absen_delay', 1)
+            try:
+                # Parse jadwal_berakhir (format: HH:MM or HH:MM:SS)
+                end_parts = jadwal_berakhir.strip().split(':')
+                end_hour, end_min = int(end_parts[0]), int(end_parts[1])
+                now = datetime.now()
+                target_time = now.replace(hour=end_hour, minute=end_min, second=0) - timedelta(minutes=absen_delay)
+                
+                if now < target_time:
+                    remaining = (target_time - now).total_seconds() / 60
+                    add_log(f'⏳ Menunggu waktu absen: {target_time.strftime("%H:%M")} ({remaining:.0f} menit lagi)', 'info')
+                    continue  # Skip this one, check again on next loop
+                else:
+                    add_log(f'⏰ Waktu absen tercapai! Target: {target_time.strftime("%H:%M")}', 'info')
+            except Exception as e:
+                add_log(f'Tidak bisa parse jadwal_berakhir, absen langsung: {e}', 'warning')
+
             add_log(f'Mengirim konfirmasi kehadiran...', 'info')
 
             # POST to konfirmasi_kehadiran
@@ -472,6 +493,16 @@ def api_engine_start():
     if session_data['engine_running']:
         return jsonify({'success': False, 'message': 'Engine sudah berjalan'})
 
+    # Read absen_delay from request
+    data = request.get_json(silent=True) or {}
+    delay = data.get('absen_delay', 1)
+    try:
+        delay = max(0, min(120, int(delay)))
+    except (ValueError, TypeError):
+        delay = 1
+    session_data['absen_delay'] = delay
+    add_log(f'Absen delay diset: {delay} menit sebelum kelas berakhir', 'info')
+
     session_data['stop_event'] = Event()
     session_data['engine_running'] = True
 
@@ -479,7 +510,7 @@ def api_engine_start():
     thread.start()
     session_data['engine_thread'] = thread
 
-    return jsonify({'success': True, 'message': 'Engine dimulai'})
+    return jsonify({'success': True, 'message': f'Engine dimulai (absen {delay} menit sebelum berakhir)'})
 
 
 @app.route('/api/engine/stop', methods=['POST'])

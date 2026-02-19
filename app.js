@@ -193,10 +193,13 @@ function renderSchedule(schedule) {
 // ===== Engine Controls =====
 async function startEngine() {
     startBtn.disabled = true;
+    const delay = parseInt(document.getElementById('absenDelay').value) || 1;
 
     try {
         const res = await fetch(`${API_BASE}/api/engine/start`, {
-            method: 'POST'
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ absen_delay: delay })
         });
 
         const data = await res.json();

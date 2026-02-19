@@ -649,9 +649,79 @@ body {
 
 .engine-controls {
     display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.engine-controls>.engine-status {
+    display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+}
+
+.engine-setting {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 16px;
+    background: rgba(255, 255, 255, 0.4);
+    border: 1px solid rgba(200, 205, 215, 0.35);
+    border-radius: var(--border-radius-sm);
+}
+
+.engine-setting label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+}
+
+.engine-setting label svg {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.delay-input {
+    width: 52px;
+    padding: 6px 8px;
+    border: 1px solid rgba(200, 205, 215, 0.5);
+    border-radius: var(--border-radius-xs);
+    background: rgba(255, 255, 255, 0.7);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--font);
+    color: var(--text-primary);
+    text-align: center;
+    outline: none;
+    transition: var(--transition);
+    -moz-appearance: textfield;
+}
+
+.delay-input::-webkit-outer-spin-button,
+.delay-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.delay-input:focus {
+    border-color: rgba(90, 106, 122, 0.5);
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 0 3px rgba(90, 106, 122, 0.1);
+}
+
+.setting-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+    padding-left: 24px;
+}
+
+.engine-buttons {
+    display: flex;
+    gap: 10px;
 }
 
 .engine-status {
