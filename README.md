@@ -1,8 +1,6 @@
----
-title: Auto Absen SimKuliah
+title: Auto Absen Simkuliah
 emoji: 📚
-colorFrom: blue
-colorTo: green
+colorFrom: pink
+colorTo: indigo
 sdk: docker
 pinned: false
----
