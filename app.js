@@ -3,6 +3,7 @@
 const API_BASE = ''; // relative - works on any domain
 let statusInterval = null;
 let isLoggedIn = false;
+let currentSchedule = []; // store for mode 3 custom times
 
 // ===== DOM Elements =====
 const loginSection = document.getElementById('loginSection');
@@ -24,6 +25,35 @@ const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const logContent = document.getElementById('logContent');
 const logoutBtn = document.getElementById('logoutBtn');
+
+// ===== Page Load: Check if already logged in =====
+window.addEventListener('load', async () => {
+    try {
+        // Send ping — if server says logged_in, skip login screen
+        const res = await fetch(`${API_BASE}/api/ping`, { method: 'POST' });
+        const data = await res.json();
+
+        if (data.logged_in && data.name) {
+            isLoggedIn = true;
+            userName.textContent = data.name;
+            userNpm.textContent = `NPM: ${data.npm || '-'}`;
+            updateHeaderStatus('online', 'Online');
+            showDashboard();
+            fetchSchedule();
+            startStatusPolling();
+            if (data.engine_running) updateEngineUI(true);
+        }
+    } catch (e) {
+        // Server not available or not logged in — stay on login page
+    }
+});
+
+// Update ping on page visibility change (user switches tabs back)
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && isLoggedIn) {
+        fetch(`${API_BASE}/api/ping`, { method: 'POST' }).catch(() => { });
+    }
+});
 
 // ===== Toggle Password =====
 if (togglePassword) {
@@ -61,7 +91,6 @@ loginForm?.addEventListener('submit', async (e) => {
         }
 
         const data = await res.json();
-        console.log('LOGIN RESPONSE:', data);
 
         if (data.success) {
             isLoggedIn = true;
@@ -73,13 +102,16 @@ loginForm?.addEventListener('submit', async (e) => {
             showDashboard();
             fetchSchedule();
             startStatusPolling();
+
+            // Send initial ping to start idle timer
+            fetch(`${API_BASE}/api/ping`, { method: 'POST' }).catch(() => { });
         } else {
             showError(data.message || 'Login gagal. Periksa NPM dan password.');
         }
 
     } catch (err) {
         console.error(err);
-        showError('Tidak dapat terhubung ke server. Pastikan backend berjalan di port 5000.');
+        showError('Tidak dapat terhubung ke server. Pastikan backend berjalan.');
     } finally {
         loginBtn.classList.remove('loading');
         loginBtn.disabled = false;
@@ -139,7 +171,9 @@ async function fetchSchedule() {
         const data = await res.json();
 
         if (data.success && data.schedule?.length > 0) {
+            currentSchedule = data.schedule;
             renderSchedule(data.schedule);
+            renderCustomTimesTable(data.schedule); // update mode 3 table
         } else {
             scheduleContent.innerHTML =
                 `<div class="empty-state">Tidak ada jadwal ditemukan</div>`;
@@ -176,11 +210,15 @@ function renderSchedule(schedule) {
                 item.status === 'upcoming' ? '◷ Akan Datang' :
                     '✓ Selesai';
 
+        const timeDisplay = item.time && item.time.trim() && item.time !== '-'
+            ? item.time
+            : '<span style="color:var(--text-muted)">-</span>';
+
         html += `
             <tr>
                 <td>${item.day || '-'}</td>
                 <td>${item.course || '-'}</td>
-                <td>${item.time || '-'}</td>
+                <td class="schedule-time">${timeDisplay}</td>
                 <td><span class="${badgeClass}">${badgeText}</span></td>
             </tr>
         `;
@@ -190,16 +228,83 @@ function renderSchedule(schedule) {
     scheduleContent.innerHTML = html;
 }
 
+// ===== Mode 3: Custom Times Table =====
+function renderCustomTimesTable(schedule) {
+    const container = document.getElementById('customTimesTable');
+    if (!container || !schedule?.length) return;
+
+    // deduplicate by course code (kd_mt_kul8 not available in schedule, use course string)
+    const seen = new Set();
+    const rows = schedule
+        .filter(item => {
+            const key = item.course;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        })
+        .map(item => {
+            const code = item.course?.split(' - ')[0] || item.course || '';
+            return `
+            <div class="custom-time-row">
+                <div class="custom-course-name">${item.course || '-'}</div>
+                <div class="custom-time-input-wrap">
+                    <input type="time" class="custom-time-input" id="ct_${CSS.escape(code)}"
+                        data-course="${escapeAttr(code)}" placeholder="--:--">
+                </div>
+            </div>`;
+        });
+
+    container.innerHTML = rows.join('');
+}
+
+function escapeAttr(str) {
+    return str.replace(/"/g, '&quot;');
+}
+
+function getCustomTimes() {
+    const inputs = document.querySelectorAll('.custom-time-input');
+    const result = {};
+    inputs.forEach(inp => {
+        if (inp.value) result[inp.dataset.course] = inp.value;
+    });
+    return result;
+}
+
+// ===== Mode radio toggle =====
+document.addEventListener('change', (e) => {
+    if (e.target.name === 'absenMode') {
+        const mode = parseInt(e.target.value);
+        const sect = document.getElementById('customTimesSection');
+        if (sect) sect.style.display = mode === 3 ? '' : 'none';
+        // Visually highlight selected
+        document.querySelectorAll('.mode-option').forEach(el => el.classList.remove('selected'));
+        e.target.closest('.mode-option')?.classList.add('selected');
+    }
+});
+
+// Highlight checked mode on load
+window.addEventListener('DOMContentLoaded', () => {
+    const checked = document.querySelector('input[name="absenMode"]:checked');
+    if (checked) checked.closest('.mode-option')?.classList.add('selected');
+});
+
 // ===== Engine Controls =====
 async function startEngine() {
     startBtn.disabled = true;
-    const delay = parseInt(document.getElementById('absenDelay').value) || 1;
+
+    const mode = parseInt(document.querySelector('input[name="absenMode"]:checked')?.value || '1');
+    const delay = parseInt(document.getElementById('absenDelay')?.value) || 1;
+    const customTimes = getCustomTimes();
+
+    const payload = { absen_mode: mode };
+    if (mode === 2) payload.absen_delay = delay;
+    if (mode === 3) payload.course_custom_times = customTimes;
 
     try {
         const res = await fetch(`${API_BASE}/api/engine/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ absen_delay: delay })
+            body: JSON.stringify(payload)
         });
 
         const data = await res.json();
@@ -277,14 +382,41 @@ async function fetchStatus() {
         const data = await res.json();
 
         if (data.success) {
+            // Handle server-side auto-logout
+            if (!data.logged_in && isLoggedIn) {
+                isLoggedIn = false;
+                stopStatusPolling();
+                updateHeaderStatus('offline', 'Offline');
+                dashboardSection.style.display = 'none';
+                loginSection.style.display = '';
+                loginForm?.reset();
+                alert('Sesi berakhir karena tidak ada aktivitas selama 20 menit.');
+                return;
+            }
+
             updateEngineUI(data.engine_running);
 
             if (data.last_check) {
-                engineTime.textContent =
-                    `Terakhir cek: ${data.last_check}`;
+                engineTime.textContent = `Terakhir cek: ${data.last_check}`;
             }
 
             renderLogs(data.logs || []);
+
+            // Restore absen mode UI from server state
+            if (data.absen_mode) {
+                const radio = document.querySelector(`input[name="absenMode"][value="${data.absen_mode}"]`);
+                if (radio && !radio.checked) {
+                    radio.checked = true;
+                    document.querySelectorAll('.mode-option').forEach(el => el.classList.remove('selected'));
+                    radio.closest('.mode-option')?.classList.add('selected');
+                    const sect = document.getElementById('customTimesSection');
+                    if (sect) sect.style.display = data.absen_mode === 3 ? '' : 'none';
+                }
+            }
+            if (data.absen_delay !== undefined) {
+                const delayIn = document.getElementById('absenDelay');
+                if (delayIn && document.activeElement !== delayIn) delayIn.value = data.absen_delay;
+            }
         }
 
     } catch (err) { }

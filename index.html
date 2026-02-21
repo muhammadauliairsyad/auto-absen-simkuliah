@@ -186,18 +186,43 @@
                         </div>
                         <div class="engine-time" id="engineTime">-</div>
                     </div>
-                    <div class="engine-setting">
-                        <label for="absenDelay">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <circle cx="12" cy="12" r="10" />
-                                <polyline points="12 6 12 12 16 14" />
-                            </svg>
-                            Absen
-                            <input type="number" id="absenDelay" min="0" max="120" value="1" class="delay-input">
-                            menit sebelum kelas berakhir
+                    <!-- Absen Mode Selector -->
+                    <div class="absen-mode-section">
+                        <!-- Mode 1 -->
+                        <label class="mode-option" id="modeOption1">
+                            <input type="radio" name="absenMode" value="1" id="mode1" checked>
+                            <div class="mode-content">
+                                <div class="mode-title">⚡ Absen Langsung</div>
+                                <div class="mode-desc">Absen segera saat kelas aktif terdeteksi</div>
+                            </div>
                         </label>
-                        <span class="setting-hint" id="settingHint">Contoh: kelas 08:00-09:40, absen di 09:39</span>
+                        <!-- Mode 2 -->
+                        <label class="mode-option" id="modeOption2">
+                            <input type="radio" name="absenMode" value="2" id="mode2">
+                            <div class="mode-content">
+                                <div class="mode-title">⏱️ Sebelum Kelas Berakhir</div>
+                                <div class="mode-desc">
+                                    Absen
+                                    <input type="number" id="absenDelay" min="0" max="120" value="1" class="delay-input"
+                                        onclick="event.stopPropagation()">
+                                    menit sebelum kelas berakhir
+                                    <span class="setting-hint" id="settingHint">Contoh: kelas 08:00-09:40, absen di
+                                        09:39</span>
+                                </div>
+                            </div>
+                        </label>
+                        <!-- Mode 3 -->
+                        <label class="mode-option" id="modeOption3">
+                            <input type="radio" name="absenMode" value="3" id="mode3">
+                            <div class="mode-content">
+                                <div class="mode-title">🎯 Jam Custom per Mata Kuliah</div>
+                                <div class="mode-desc">Tentukan jam absen masing-masing mata kuliah</div>
+                            </div>
+                        </label>
+                        <!-- Mode 3 custom times table -->
+                        <div id="customTimesSection" style="display:none;">
+                            <div id="customTimesTable" class="custom-times-table"></div>
+                        </div>
                     </div>
                     <div class="engine-buttons">
                         <button class="btn-start" id="startBtn" onclick="startEngine()">

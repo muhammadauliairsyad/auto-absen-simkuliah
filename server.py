@@ -45,7 +45,10 @@ session_data = {
     'stop_event': Event(),
     'engine_thread': None,
     'absen_done_today': set(),
-    'absen_delay': 1,  # minutes before class ends
+    'absen_delay': 1,       # minutes before class ends (mode 2)
+    'absen_mode': 1,        # 1=immediate, 2=X min before end, 3=custom per-course
+    'course_custom_times': {},  # {course_key: 'HH:MM'} for mode 3
+    'last_activity': None,  # datetime of last API activity, for idle logout
 }
 
 
@@ -294,6 +297,8 @@ def check_and_absen(s):
             return False
 
         # Extract all parameters from the JS block
+        any_success = False
+        any_skipped = False
         for match_id in set(konfirmasi_matches):
             # Check if we already did this one today
             today_key = f"{datetime.now().strftime('%Y-%m-%d')}_{match_id}"
@@ -327,35 +332,61 @@ def check_and_absen(s):
             sks_mengajar = js_match.group(6)
             absen_id = js_match.group(7)
 
-            # Extract course name from card header
+            # Extract course name
             course_match = re.search(
                 r'Absensi Kelas.*?\|\s*([^|]+)\s*\|.*?Pertemuan',
                 page_text
             )
             course_name = course_match.group(1).strip() if course_match else kd_mt_kul8
 
-            add_log(f'Kelas aktif ditemukan: {course_name} (Pertemuan {pertemuan_val})', 'info')
-            add_log(f'Jadwal: {jadwal_mulai} - {jadwal_berakhir}', 'info')
+            add_log(f'Kelas aktif: {course_name} | {jadwal_mulai}-{jadwal_berakhir} (Pertemuan {pertemuan_val})', 'info')
 
-            # ===== DELAY CHECK: wait until X minutes before class ends =====
-            absen_delay = session_data.get('absen_delay', 1)
+            # ===== TIMING CHECK based on absen_mode =====
+            absen_mode = session_data.get('absen_mode', 1)
+            now = datetime.now()
+            skip = False
+
+            def parse_time(t_str):
+                parts = t_str.strip().split(':')
+                return int(parts[0]), int(parts[1])
+
             try:
-                # Parse jadwal_berakhir (format: HH:MM or HH:MM:SS)
-                end_parts = jadwal_berakhir.strip().split(':')
-                end_hour, end_min = int(end_parts[0]), int(end_parts[1])
-                now = datetime.now()
-                target_time = now.replace(hour=end_hour, minute=end_min, second=0) - timedelta(minutes=absen_delay)
-                
-                if now < target_time:
-                    remaining = (target_time - now).total_seconds() / 60
-                    add_log(f'⏳ Menunggu waktu absen: {target_time.strftime("%H:%M")} ({remaining:.0f} menit lagi)', 'info')
-                    continue  # Skip this one, check again on next loop
-                else:
-                    add_log(f'⏰ Waktu absen tercapai! Target: {target_time.strftime("%H:%M")}', 'info')
+                if absen_mode == 2:
+                    # Mode 2: X menit sebelum berakhir
+                    absen_delay = session_data.get('absen_delay', 1)
+                    eh, em = parse_time(jadwal_berakhir)
+                    target = now.replace(hour=eh, minute=em, second=0) - timedelta(minutes=absen_delay)
+                    if now < target:
+                        remaining = (target - now).total_seconds() / 60
+                        add_log(f'⏳ Menunggu {target.strftime("%H:%M")} ({remaining:.0f} mnt lagi) — {course_name}', 'info')
+                        skip = True
+                    else:
+                        add_log(f'⏰ Waktu absen tercapai ({target.strftime("%H:%M")}) — {course_name}', 'info')
+                elif absen_mode == 3:
+                    # Mode 3: jam khusus per mata kuliah
+                    custom_times = session_data.get('course_custom_times', {})
+                    course_key = kd_mt_kul8 or course_name
+                    custom_t = custom_times.get(course_key)
+                    if custom_t:
+                        ch, cm = parse_time(custom_t)
+                        target = now.replace(hour=ch, minute=cm, second=0)
+                        if now < target:
+                            remaining = (target - now).total_seconds() / 60
+                            add_log(f'⏳ Menunggu jam custom {custom_t} ({remaining:.0f} mnt lagi) — {course_name}', 'info')
+                            skip = True
+                        else:
+                            add_log(f'⏰ Jam custom tercapai ({custom_t}) — {course_name}', 'info')
+                    else:
+                        add_log(f'Mode 3 tapi tidak ada jam custom untuk {course_name}, absen langsung', 'warning')
+                # Mode 1 = absen segera, tidak ada skip
             except Exception as e:
-                add_log(f'Tidak bisa parse jadwal_berakhir, absen langsung: {e}', 'warning')
+                add_log(f'Error parse waktu, absen langsung: {e}', 'warning')
 
-            add_log(f'Mengirim konfirmasi kehadiran...', 'info')
+            if skip:
+                any_skipped = True
+                continue
+
+            add_log(f'Mengirim konfirmasi kehadiran untuk {course_name}...', 'info')
 
             # POST to konfirmasi_kehadiran
             absen_data = {
@@ -369,24 +400,23 @@ def check_and_absen(s):
             }
 
             absen_res = s.post(SIMKULIAH_KONFIRMASI_URL, data=absen_data, timeout=15, verify=False)
-            save_debug('absen_response.html', absen_res.text)
+            save_debug(f'absen_response_{match_id}.html', absen_res.text)
 
             response_text = absen_res.text.strip()
-            add_log(f'Response absen: {response_text}', 'info')
+            add_log(f'Response [{course_name}]: {response_text}', 'info')
 
             if response_text == 'success' or 'berhasil' in response_text.lower():
-                add_log(f'✓ Absen BERHASIL untuk {course_name}!', 'success')
+                add_log(f'✅ Absen BERHASIL: {course_name}!', 'success')
                 session_data['absen_done_today'].add(today_key)
-                return True
+                any_success = True
             elif 'sudah' in response_text.lower():
-                add_log(f'Absen sudah tercatat untuk {course_name}', 'info')
+                add_log(f'ℹ️ Sudah absen: {course_name}', 'info')
                 session_data['absen_done_today'].add(today_key)
-                return True
+                any_success = True
             else:
-                add_log(f'Response tidak dikenal: {response_text[:200]}', 'warning')
-                return False
+                add_log(f'⚠️ Response tak dikenal untuk {course_name}: {response_text[:100]}', 'warning')
 
-        return False
+        return any_success
 
     except Exception as e:
         add_log(f'Error saat absen: {str(e)}', 'error')
@@ -453,6 +483,7 @@ def api_login():
     session_data['name'] = result
     session_data['logged_in'] = True
     session_data['absen_done_today'] = set()
+    session_data['last_activity'] = datetime.now()
 
     return jsonify({'success': True, 'name': result, 'npm': npm})
 
@@ -493,15 +524,29 @@ def api_engine_start():
     if session_data['engine_running']:
         return jsonify({'success': False, 'message': 'Engine sudah berjalan'})
 
-    # Read absen_delay from request
+    # Read absen settings from request
     data = request.get_json(silent=True) or {}
-    delay = data.get('absen_delay', 1)
+    mode = data.get('absen_mode', 1)
     try:
-        delay = max(0, min(120, int(delay)))
+        mode = max(1, min(3, int(mode)))
     except (ValueError, TypeError):
-        delay = 1
-    session_data['absen_delay'] = delay
-    add_log(f'Absen delay diset: {delay} menit sebelum kelas berakhir', 'info')
+        mode = 1
+    session_data['absen_mode'] = mode
+
+    if mode == 2:
+        delay = data.get('absen_delay', 1)
+        try:
+            delay = max(0, min(120, int(delay)))
+        except (ValueError, TypeError):
+            delay = 1
+        session_data['absen_delay'] = delay
+        add_log(f'Mode 2: absen {delay} menit sebelum kelas berakhir', 'info')
+    elif mode == 3:
+        custom_times = data.get('course_custom_times', {})
+        session_data['course_custom_times'] = custom_times
+        add_log(f'Mode 3: jam absen custom per mata kuliah ({len(custom_times)} kelas dikonfigurasi)', 'info')
+    else:
+        add_log('Mode 1: absen segera saat kelas aktif terdeteksi', 'info')
 
     session_data['stop_event'] = Event()
     session_data['engine_running'] = True
@@ -510,7 +555,20 @@ def api_engine_start():
     thread.start()
     session_data['engine_thread'] = thread
 
-    return jsonify({'success': True, 'message': f'Engine dimulai (absen {delay} menit sebelum berakhir)'})
+    return jsonify({'success': True, 'message': f'Engine dimulai (mode {mode})'})
+
+
+@app.route('/api/engine/settings', methods=['POST'])
+def api_engine_settings():
+    """Update engine settings without restarting."""
+    data = request.get_json(silent=True) or {}
+    if 'absen_mode' in data:
+        session_data['absen_mode'] = max(1, min(3, int(data['absen_mode'])))
+    if 'absen_delay' in data:
+        session_data['absen_delay'] = max(0, min(120, int(data['absen_delay'])))
+    if 'course_custom_times' in data:
+        session_data['course_custom_times'] = data['course_custom_times']
+    return jsonify({'success': True})
 
 
 @app.route('/api/engine/stop', methods=['POST'])
@@ -526,6 +584,21 @@ def api_engine_stop():
 
 @app.route('/api/status', methods=['GET'])
 def api_status():
+    # Idle auto-logout: if browser hasn't sent a ping for 20 min, log out
+    IDLE_TIMEOUT = 20 * 60  # seconds
+    if session_data['logged_in'] and session_data.get('last_browser_seen'):
+        idle = (datetime.now() - session_data['last_browser_seen']).total_seconds()
+        if idle > IDLE_TIMEOUT:
+            # Auto-logout
+            add_log(f'Auto-logout: tidak ada aktivitas selama {int(idle//60)} menit', 'warning')
+            if session_data['engine_running']:
+                session_data['stop_event'].set()
+                session_data['engine_running'] = False
+            session_data['logged_in'] = False
+            session_data['session'] = None
+            session_data['name'] = None
+            session_data['npm'] = None
+
     return jsonify({
         'success': True,
         'logged_in': session_data['logged_in'],
@@ -534,6 +607,9 @@ def api_status():
         'logs': session_data['logs'][-50:],
         'npm': session_data['npm'],
         'name': session_data['name'],
+        'absen_mode': session_data.get('absen_mode', 1),
+        'absen_delay': session_data.get('absen_delay', 1),
+        'course_custom_times': session_data.get('course_custom_times', {}),
     })
 
 
@@ -541,6 +617,16 @@ def api_status():
 def api_clear_logs():
     session_data['logs'] = []
     return jsonify({'success': True})
+
+
+@app.route('/api/ping', methods=['POST'])
+def api_ping():
+    """Browser calls this on page load/focus to reset the idle timer."""
+    if session_data['logged_in']:
+        session_data['last_browser_seen'] = datetime.now()
+    return jsonify({'success': True, 'logged_in': session_data['logged_in'],
+                    'name': session_data['name'], 'npm': session_data['npm'],
+                    'engine_running': session_data['engine_running']})
 
 
 # ===== Request Logging =====
