@@ -402,8 +402,9 @@ async function fetchStatus() {
 
             renderLogs(data.logs || []);
 
-            // Restore absen mode UI from server state
-            if (data.absen_mode) {
+            // Restore absen mode UI from server state — only when engine is running
+            // (don't override user's local selection while engine is stopped)
+            if (data.engine_running && data.absen_mode) {
                 const radio = document.querySelector(`input[name="absenMode"][value="${data.absen_mode}"]`);
                 if (radio && !radio.checked) {
                     radio.checked = true;
@@ -413,7 +414,7 @@ async function fetchStatus() {
                     if (sect) sect.style.display = data.absen_mode === 3 ? '' : 'none';
                 }
             }
-            if (data.absen_delay !== undefined) {
+            if (data.engine_running && data.absen_delay !== undefined) {
                 const delayIn = document.getElementById('absenDelay');
                 if (delayIn && document.activeElement !== delayIn) delayIn.value = data.absen_delay;
             }

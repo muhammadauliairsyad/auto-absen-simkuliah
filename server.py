@@ -7,8 +7,14 @@ import os
 import re
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Thread, Event
+
+WIB = timezone(timedelta(hours=7))
+
+def now_wib():
+    """Current time in WIB (UTC+7)."""
+    return datetime.now(WIB)
 
 import requests
 from bs4 import BeautifulSoup
@@ -55,7 +61,7 @@ session_data = {
 # ===== Helper Functions =====
 def add_log(message, level='info'):
     """Add a log entry."""
-    now = datetime.now().strftime('%H:%M:%S')
+    now = now_wib().strftime('%H:%M:%S')
     entry = {'time': now, 'message': message, 'level': level}
     session_data['logs'].append(entry)
     if len(session_data['logs']) > 100:
@@ -157,68 +163,76 @@ def fetch_schedule(s):
     """Fetch jadwal kuliah from SimKuliah."""
     schedule = []
     try:
-        # Try jadwal semester page
         add_log('Mengambil jadwal kuliah...', 'info')
         res = s.get(SIMKULIAH_JADWAL_URL, timeout=15, verify=False)
         save_debug('jadwal_semester.html', res.text)
 
         soup = BeautifulSoup(res.text, 'lxml')
-        tables = soup.find_all('table')
 
-        for table in tables:
-            rows = table.find_all('tr')
-            if len(rows) < 2:
+        # The jadwal page uses a meeting-attendance grid:
+        # Col 0 = Kode MK, Col 1 = Mata Kuliah
+        # Col 2+ = each meeting (contains Hari, tanggal + Jam)
+        table = soup.find('table', id='simpletable')
+        if not table:
+            # fallback: try the first table that has Kode + MK-like headers
+            for t in soup.find_all('table'):
+                hdr = t.get_text().lower()
+                if 'kode' in hdr and ('mata kuliah' in hdr or 'matakuliah' in hdr):
+                    table = t
+                    break
+
+        if not table:
+            add_log('Tabel jadwal tidak ditemukan. Cek debug/jadwal_semester.html', 'warning')
+            return []
+
+        rows = table.find_all('tr')
+        for row in rows:
+            cells = row.find_all('td')
+            if len(cells) < 3:
+                continue  # skip header rows
+
+            code = cells[0].get_text(strip=True)
+            course_raw = cells[1].get_text(separator=' ', strip=True)
+            # Strip injected "(Kelas : N)(SKS Mengajar : N)" suffixes if present
+            course_name = re.split(r'\(Kelas', course_raw)[0].strip()
+
+            if not code or not course_name:
                 continue
 
-            header_text = rows[0].get_text().lower()
-            if not any(k in header_text for k in ['hari', 'mata kuliah', 'matakuliah', 'jam', 'waktu', 'mk', 'kode']):
-                continue
+            # Find first meeting cell with day and time info
+            day_str = ''
+            time_str = ''
+            for cell in cells[2:]:
+                cell_text = cell.get_text(separator='\n', strip=True)
+                # Look for "Hari, tanggal : Rabu, 11-02-2026"
+                day_match = re.search(r'Hari,\s*tanggal\s*:\s*([\w]+),', cell_text, re.IGNORECASE)
+                # Look for "Jam : 14.00 - 15.40"
+                jam_match = re.search(r'Jam\s*:\s*([\d.]+\s*-\s*[\d.]+)', cell_text)
 
-            headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(['th', 'td'])]
-            
-            col_day = next((i for i, h in enumerate(headers) if 'hari' in h), None)
-            col_course = next((i for i, h in enumerate(headers) if any(k in h for k in ['mata kuliah', 'matakuliah', 'mk', 'nama'])), None)
-            col_code = next((i for i, h in enumerate(headers) if 'kode' in h), None)
-            col_time_start = next((i for i, h in enumerate(headers) if any(k in h for k in ['jam mulai', 'mulai', 'waktu'])), None)
-            col_time_end = next((i for i, h in enumerate(headers) if any(k in h for k in ['jam selesai', 'berakhir', 'selesai'])), None)
-            col_room = next((i for i, h in enumerate(headers) if any(k in h for k in ['ruang', 'room'])), None)
+                if day_match:
+                    day_str = day_match.group(1).strip()
+                if jam_match:
+                    # Normalize dots to colons: 14.00 -> 14:00
+                    raw = jam_match.group(1).strip()
+                    time_str = re.sub(r'(\d+)\.(\d+)', r'\1:\2', raw)
 
-            for row in rows[1:]:
-                cells = row.find_all(['td'])
-                if len(cells) < 2:
-                    continue
+                if day_str and time_str:
+                    break
 
-                def get_cell(idx):
-                    if idx is not None and idx < len(cells):
-                        return cells[idx].get_text(strip=True)
-                    return ''
-
-                day = get_cell(col_day)
-                course = get_cell(col_course)
-                code = get_cell(col_code)
-                time_start = get_cell(col_time_start)
-                time_end = get_cell(col_time_end)
-                room = get_cell(col_room)
-
-                if course or code:
-                    display_name = f'{code} - {course}' if code and course else (course or code)
-                    time_str = f'{time_start} - {time_end}' if time_start and time_end else (time_start or time_end or '')
-                    schedule.append({
-                        'day': day,
-                        'course': display_name,
-                        'time': time_str,
-                        'room': room,
-                        'status': 'upcoming',
-                    })
-
-            if schedule:
-                break
+            display_name = f'{code} - {course_name}'
+            schedule.append({
+                'day': day_str,
+                'course': display_name,
+                'time': time_str,
+                'room': '',
+                'status': 'upcoming',
+            })
 
         if schedule:
             update_schedule_status(schedule)
             add_log(f'Ditemukan {len(schedule)} jadwal kuliah', 'success')
         else:
-            add_log('Jadwal tidak ditemukan di halaman jadwal. Cek debug/jadwal_semester.html', 'warning')
+            add_log('Jadwal tidak ditemukan. Cek debug/jadwal_semester.html', 'warning')
 
         return schedule
 
@@ -229,7 +243,7 @@ def fetch_schedule(s):
 
 def update_schedule_status(schedule):
     """Update status (active/upcoming/done) based on current time."""
-    now = datetime.now()
+    now = now_wib()
     day_names = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu']
     today = day_names[now.weekday()]
     current_time = now.strftime('%H:%M')
@@ -301,7 +315,7 @@ def check_and_absen(s):
         any_skipped = False
         for match_id in set(konfirmasi_matches):
             # Check if we already did this one today
-            today_key = f"{datetime.now().strftime('%Y-%m-%d')}_{match_id}"
+            today_key = f"{now_wib().strftime('%Y-%m-%d')}_{match_id}"
             if today_key in session_data['absen_done_today']:
                 add_log(f'Absen ID {match_id} sudah dilakukan hari ini', 'info')
                 continue
@@ -343,7 +357,7 @@ def check_and_absen(s):
 
             # ===== TIMING CHECK based on absen_mode =====
             absen_mode = session_data.get('absen_mode', 1)
-            now = datetime.now()
+            now = now_wib()
             skip = False
 
             def parse_time(t_str):
@@ -434,7 +448,7 @@ def engine_loop(stop_event):
                 add_log('Session tidak tersedia, engine berhenti', 'error')
                 break
 
-            session_data['last_check'] = datetime.now().strftime('%H:%M:%S')
+            session_data['last_check'] = now_wib().strftime('%H:%M:%S')
 
             # Check absensi page and auto-absen if needed
             check_and_absen(s)
@@ -483,7 +497,7 @@ def api_login():
     session_data['name'] = result
     session_data['logged_in'] = True
     session_data['absen_done_today'] = set()
-    session_data['last_activity'] = datetime.now()
+    session_data['last_activity'] = now_wib()
 
     return jsonify({'success': True, 'name': result, 'npm': npm})
 
@@ -587,7 +601,7 @@ def api_status():
     # Idle auto-logout: if browser hasn't sent a ping for 20 min, log out
     IDLE_TIMEOUT = 20 * 60  # seconds
     if session_data['logged_in'] and session_data.get('last_browser_seen'):
-        idle = (datetime.now() - session_data['last_browser_seen']).total_seconds()
+        idle = (now_wib() - session_data['last_browser_seen']).total_seconds()
         if idle > IDLE_TIMEOUT:
             # Auto-logout
             add_log(f'Auto-logout: tidak ada aktivitas selama {int(idle//60)} menit', 'warning')
@@ -623,7 +637,7 @@ def api_clear_logs():
 def api_ping():
     """Browser calls this on page load/focus to reset the idle timer."""
     if session_data['logged_in']:
-        session_data['last_browser_seen'] = datetime.now()
+        session_data['last_browser_seen'] = now_wib()
     return jsonify({'success': True, 'logged_in': session_data['logged_in'],
                     'name': session_data['name'], 'npm': session_data['npm'],
                     'engine_running': session_data['engine_running']})
@@ -643,7 +657,7 @@ def api_test():
     return jsonify({
         'success': True,
         'message': 'Server is running!',
-        'time': datetime.now().strftime('%H:%M:%S'),
+        'time': now_wib().strftime('%H:%M:%S'),
         'logged_in': session_data['logged_in'],
     })
 
