@@ -402,22 +402,8 @@ async function fetchStatus() {
 
             renderLogs(data.logs || []);
 
-            // Restore absen mode UI from server state — only when engine is running
-            // (don't override user's local selection while engine is stopped)
-            if (data.engine_running && data.absen_mode) {
-                const radio = document.querySelector(`input[name="absenMode"][value="${data.absen_mode}"]`);
-                if (radio && !radio.checked) {
-                    radio.checked = true;
-                    document.querySelectorAll('.mode-option').forEach(el => el.classList.remove('selected'));
-                    radio.closest('.mode-option')?.classList.add('selected');
-                    const sect = document.getElementById('customTimesSection');
-                    if (sect) sect.style.display = data.absen_mode === 3 ? '' : 'none';
-                }
-            }
-            if (data.engine_running && data.absen_delay !== undefined) {
-                const delayIn = document.getElementById('absenDelay');
-                if (delayIn && document.activeElement !== delayIn) delayIn.value = data.absen_delay;
-            }
+            // Note: absen_mode and absen_delay are NOT synced from server here.
+            // Radio selection is client-side only — server receives mode on Start.
         }
 
     } catch (err) { }
